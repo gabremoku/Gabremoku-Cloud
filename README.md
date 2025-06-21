@@ -35,7 +35,7 @@ The name is a pseudo-Japanese fusion, inspired by the famous Ichimoku indicator.
 ## 🧑‍💻 Author
 
 Developed by **[@gabremoku](https://github.com/gabremoku)**  
-© 2025 – All rights reserved
+© 2025 – All rights reserved.
 Look at my other works: https://liberi-di-scegliere.lovable.app/
 
 > Public source visible due to TradingView free-tier limitations.
