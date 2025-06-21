@@ -1,0 +1,91 @@
+//@version=6
+// Gabremoku Cloud v3.4 – © 2025 gabremoku
+// Developed by gabremoku – All rights reserved. https://github.com/gabremoku
+// Redistribution, modification, or derivative use is prohibited without explicit permission.
+// Source code visibility required by TradingView Free Tier limitations.
+
+
+
+indicator("Gabremoku Cloud V3.4.2 – Ravenous eyes", overlay=true)
+
+// === PRESET SELEZIONE === //
+preset = input.string(defval="Auto", options=["Auto", "Crypto", "Equity"], title="Preset")
+isCrypto = syminfo.type == "crypto"
+useCrypto = preset == "Crypto" or (preset == "Auto" and isCrypto)
+
+// === PARAMETRI ADATTIVI === //
+emaFastLength    = useCrypto ? 34 : 50
+emaSlowLength    = useCrypto ? 144 : 200
+bbLength         = 20
+bbMult           = 2.0
+atrLength        = useCrypto ? 10 : 14
+squeezeFactor    = 0.85
+volLookback      = useCrypto ? 15 : 20
+breakoutLookback = useCrypto ? 3 : 5
+memoryBars       = 5
+
+// === MEDIE MOBILI === //
+emaFast  = ta.ema(close, emaFastLength)
+emaSlow  = ta.ema(close, emaSlowLength)
+emaEntry = ta.ema(close, 20)
+emaSlope = emaFast - emaFast[3]
+
+// === ATR & GAP === //
+atrVal     = ta.atr(atrLength)
+atrMA      = ta.sma(atrVal, atrLength)
+emaGapMin  = atrVal * 0.5
+
+// === TREND === //
+trendUp   = emaFast > emaSlow and emaSlope > 0 and close > emaFast and close > emaEntry and (emaFast - emaSlow > emaGapMin)
+trendDown = emaFast < emaSlow and emaSlope < 0 and close < emaFast and close < emaEntry and (emaSlow - emaFast > emaGapMin)
+
+// === BB + COMPRESSIONE === //
+basis    = ta.sma(close, bbLength)
+dev      = bbMult * ta.stdev(close, bbLength)
+upperBB  = basis + dev
+lowerBB  = basis - dev
+bbWidth  = upperBB - lowerBB
+bbComp   = bbWidth < ta.sma(bbWidth, bbLength)
+atrComp  = atrVal < atrMA * squeezeFactor
+compressionNow = bbComp and atrComp
+
+// === MEMORIA STATO COMPRESSIONE === //
+var int compressionState = 0
+compressionState := compressionNow ? memoryBars : math.max(compressionState[1] - 1, 0)
+
+// === BREAKOUTS === //
+avgVol      = ta.sma(volume, volLookback)
+volumeSpike = volume > avgVol
+bodySize    = math.abs(close - open)
+validBody   = bodySize > atrVal * 0.2
+
+breakoutHigh = ta.highest(close[1], breakoutLookback)
+breakout     = close > breakoutHigh and close > open and volumeSpike and validBody
+
+breakoutLow  = ta.lowest(close[1], breakoutLookback)
+breakdown    = close < breakoutLow and close < open and volumeSpike and validBody
+
+// === ENTRY CONDITIONS === //
+enterLong  = compressionState > 0 and trendUp and breakout
+enterShort = compressionState > 0 and trendDown and breakdown
+
+// === VISUALIZZAZIONE === //
+plot(emaFast, title="EMA Fast", color=color.rgb(155, 100, 255)) // lilla
+plot(emaSlow, title="EMA Slow", color=color.rgb(255, 50, 100), linewidth=3)  // rosa acceso spessa
+
+// Etichette Buy/Sell
+if (enterLong)
+    label.new(bar_index, low, text="Bite marks", style=label.style_label_up, color=color.green, textcolor=color.white, size=size.tiny, yloc=yloc.belowbar)
+if (enterShort)
+    label.new(bar_index, high, text="Bite marks", style=label.style_label_down, color=color.red, textcolor=color.white, size=size.tiny, yloc=yloc.abovebar)
+
+// === KUMO (linee nascoste, solo nuvola visibile) === //
+plot1 = compressionNow ? upperBB : na
+plot2 = compressionNow ? lowerBB : na
+p1 = plot(plot1, title="Kumo Upper", color=color.new(color.gray, 30), display=display.none)
+p2 = plot(plot2, title="Kumo Lower", color=color.new(color.gray, 30), display=display.none)
+fill(p1, p2, color=color.new(color.gray, 80), title="Kumo Cloud")  // visibile!
+
+// === ALERT === //
+alertcondition(enterLong, title="Gabremoku Long", message="🚨 MOR☠ Long su {{ticker}} a {{close}}")
+alertcondition(enterShort, title="Gabremoku Short", message="🚨 MOR☠ Short su {{ticker}} a {{close}}")
