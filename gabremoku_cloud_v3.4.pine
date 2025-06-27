@@ -1,91 +1,240 @@
 //@version=6
-// Gabremoku Cloud v3.4 – © 2025 gabremoku
-// Developed by gabremoku – All rights reserved. https://github.com/gabremoku
+// Gabremoku Cloud v3.6 © 2025 gabremoku
+// Developed by gabremoku – All rights reserved. https://github.com/gabremoku/Gabremoku-Cloud
 // Redistribution, modification, or derivative use is prohibited without explicit permission.
-// Source code visibility required by TradingView Free Tier limitations.
 
-
-
-indicator("Gabremoku Cloud V3.4.2 – Ravenous eyes", overlay=true)
+indicator("Gabremoku Cloud V3.6 – Ravenous eyes", overlay=true)
 
 // === PRESET SELEZIONE === //
 preset = input.string(defval="Auto", options=["Auto", "Crypto", "Equity"], title="Preset")
 isCrypto = syminfo.type == "crypto"
 useCrypto = preset == "Crypto" or (preset == "Auto" and isCrypto)
 
+// === FONTE PREZZO === //
+sourceOption = input.string("Close", title="Price Source", options=["Close", "OHLC4", "Heikin-Ashi"])
+price = sourceOption == "OHLC4" ? ohlc4 : sourceOption == "Heikin-Ashi" ? (open + high + low + close) / 4 : close
+
 // === PARAMETRI ADATTIVI === //
-emaFastLength    = useCrypto ? 34 : 50
-emaSlowLength    = useCrypto ? 144 : 200
+baseEmaFast      = useCrypto ? 34 : 50
+baseEmaSlow      = useCrypto ? 144 : 200
+atrLength        = useCrypto ? 10 : 14
 bbLength         = 20
 bbMult           = 2.0
-atrLength        = useCrypto ? 10 : 14
 squeezeFactor    = 0.85
 volLookback      = useCrypto ? 15 : 20
 breakoutLookback = useCrypto ? 3 : 5
 memoryBars       = 5
 
+// === ADATTIVITÀ === //
+avgVol      = ta.sma(volume, volLookback)
+volumeSpike = volume > avgVol
+atrVal      = ta.atr(atrLength)
+atrMA       = ta.sma(atrVal, atrLength)
+atrSpike    = atrVal > atrMA
+momentumUp  = ta.mom(price, 5) > 0
+momentumDown= ta.mom(price, 5) < 0
+
+f_dynamicLength(cond, baseLen) =>
+    factor = cond ? 0.7 : 1.2
+    math.max(2, math.round(baseLen * factor))
+
+emaFastLength = f_dynamicLength(volumeSpike and atrSpike, baseEmaFast)
+emaSlowLength = f_dynamicLength(volumeSpike and atrSpike, baseEmaSlow)
+
+// === EMA CUSTOM A LUNGHEZZA VARIABILE === //
+f_ema_dynamic(src, len) =>
+    var float ema = na
+    alpha = 2.0 / (len + 1)
+    ema := na(ema[1]) ? src : alpha * src + (1 - alpha) * ema[1]
+    ema
+
 // === MEDIE MOBILI === //
-emaFast  = ta.ema(close, emaFastLength)
-emaSlow  = ta.ema(close, emaSlowLength)
-emaEntry = ta.ema(close, 20)
+emaFast  = f_ema_dynamic(price, emaFastLength)
+emaSlow  = f_ema_dynamic(price, emaSlowLength)
+emaEntry = ta.ema(price, 20)
 emaSlope = emaFast - emaFast[3]
 
-// === ATR & GAP === //
-atrVal     = ta.atr(atrLength)
-atrMA      = ta.sma(atrVal, atrLength)
-emaGapMin  = atrVal * 0.5
-
 // === TREND === //
-trendUp   = emaFast > emaSlow and emaSlope > 0 and close > emaFast and close > emaEntry and (emaFast - emaSlow > emaGapMin)
-trendDown = emaFast < emaSlow and emaSlope < 0 and close < emaFast and close < emaEntry and (emaSlow - emaFast > emaGapMin)
+emaGapMin = atrVal * 0.5
+trendUp   = emaFast > emaSlow and emaSlope > 0 and price > emaFast and price > emaEntry and (emaFast - emaSlow > emaGapMin)
+trendDown = emaFast < emaSlow and emaSlope < 0 and price < emaFast and price < emaEntry and (emaSlow - emaFast > emaGapMin)
 
 // === BB + COMPRESSIONE === //
-basis    = ta.sma(close, bbLength)
-dev      = bbMult * ta.stdev(close, bbLength)
-upperBB  = basis + dev
-lowerBB  = basis - dev
-bbWidth  = upperBB - lowerBB
-bbComp   = bbWidth < ta.sma(bbWidth, bbLength)
-atrComp  = atrVal < atrMA * squeezeFactor
+basis     = ta.sma(price, bbLength)
+dev       = bbMult * ta.stdev(price, bbLength)
+upperBB   = basis + dev
+lowerBB   = basis - dev
+bbWidth   = upperBB - lowerBB
+bbComp    = bbWidth < ta.sma(bbWidth, bbLength)
+atrComp   = atrVal < atrMA * squeezeFactor
 compressionNow = bbComp and atrComp
 
 // === MEMORIA STATO COMPRESSIONE === //
 var int compressionState = 0
 compressionState := compressionNow ? memoryBars : math.max(compressionState[1] - 1, 0)
 
-// === BREAKOUTS === //
-avgVol      = ta.sma(volume, volLookback)
-volumeSpike = volume > avgVol
-bodySize    = math.abs(close - open)
-validBody   = bodySize > atrVal * 0.2
-
-breakoutHigh = ta.highest(close[1], breakoutLookback)
-breakout     = close > breakoutHigh and close > open and volumeSpike and validBody
-
-breakoutLow  = ta.lowest(close[1], breakoutLookback)
-breakdown    = close < breakoutLow and close < open and volumeSpike and validBody
+// === BREAKOUT + FILTRI === //
+bodySize   = math.abs(close - open)
+validBody  = bodySize > atrVal * 0.2
+breakout   = price > ta.highest(close[1], breakoutLookback) and close > open and volumeSpike and validBody and momentumUp
+breakdown  = price < ta.lowest(close[1], breakoutLookback) and close < open and volumeSpike and validBody and momentumDown
 
 // === ENTRY CONDITIONS === //
 enterLong  = compressionState > 0 and trendUp and breakout
 enterShort = compressionState > 0 and trendDown and breakdown
 
 // === VISUALIZZAZIONE === //
-plot(emaFast, title="EMA Fast", color=color.rgb(155, 100, 255)) // lilla
-plot(emaSlow, title="EMA Slow", color=color.rgb(255, 50, 100), linewidth=3)  // rosa acceso spessa
+plot(emaFast, title="EMA Fast", color=color.rgb(184, 163, 223, 42))
+plot(emaSlow, title="EMA Slow", color=#e91e628f, linewidth=3)
 
-// Etichette Buy/Sell
 if (enterLong)
     label.new(bar_index, low, text="Bite marks", style=label.style_label_up, color=color.green, textcolor=color.white, size=size.tiny, yloc=yloc.belowbar)
 if (enterShort)
     label.new(bar_index, high, text="Bite marks", style=label.style_label_down, color=color.red, textcolor=color.white, size=size.tiny, yloc=yloc.abovebar)
 
-// === KUMO (linee nascoste, solo nuvola visibile) === //
+// === GABREMOKU KUMO === //
 plot1 = compressionNow ? upperBB : na
 plot2 = compressionNow ? lowerBB : na
-p1 = plot(plot1, title="Kumo Upper", color=color.new(color.gray, 30), display=display.none)
-p2 = plot(plot2, title="Kumo Lower", color=color.new(color.gray, 30), display=display.none)
-fill(p1, p2, color=color.new(color.gray, 80), title="Kumo Cloud")  // visibile!
+p1 = plot(plot1, title="G-Kumo Upper", color=color.new(color.gray, 30), display=display.none) //Gabremoku Kumo upper line
+p2 = plot(plot2, title="G-Kumo Lower", color=color.new(color.gray, 30), display=display.none) //Gabremoku Kumo lower line
+fill(p1, p2, color=color.new(color.gray, 80), title="Gabremoku Kumo")
 
-// === ALERT === //
-alertcondition(enterLong, title="Gabremoku Long", message="🚨 MOR☠ Long su {{ticker}} a {{close}}")
-alertcondition(enterShort, title="Gabremoku Short", message="🚨 MOR☠ Short su {{ticker}} a {{close}}")
+
+
+
+
+
+// === ICHIMOKU KUMO === //
+ichimokuPreset = input.string("Auto", title="Preset Ichimoku", options=["Auto", "Crypto", "Equity", "Custom"], group="Ichimoku Settings")
+
+// === Valori di default === //
+tenkanDefault  = ichimokuPreset == "Crypto" or (ichimokuPreset == "Auto" and useCrypto)     ? 9  : ichimokuPreset == "Equity" or (ichimokuPreset == "Auto" and not useCrypto) ? 7  : na
+kijunDefault   = ichimokuPreset == "Crypto" or (ichimokuPreset == "Auto" and useCrypto)     ? 26 : ichimokuPreset == "Equity" or (ichimokuPreset == "Auto" and not useCrypto) ? 22 : na
+chikouDefault  = ichimokuPreset == "Crypto" or (ichimokuPreset == "Auto" and useCrypto)     ? 52 : ichimokuPreset == "Equity" or (ichimokuPreset == "Auto" and not useCrypto) ? 44 : na
+shiftDefault   = ichimokuPreset == "Crypto" or (ichimokuPreset == "Auto" and useCrypto)     ? 26 : ichimokuPreset == "Equity" or (ichimokuPreset == "Auto" and not useCrypto) ? 22 : na
+
+// === Input visibili solo se Custom === //
+var int tenkanInput  = na
+var int kijunInput   = na
+var int chikouInput  = na
+var int shiftInput   = na
+
+if ichimokuPreset == "Custom"
+    tenkanInput  := input.int(9,  title="Tenkan-sen (Conversion Line)",      minval=1, group="Ichimoku Settings")
+    kijunInput   := input.int(26, title="Kijun-sen (Base Line)",             minval=1, group="Ichimoku Settings")
+    chikouInput  := input.int(52, title="Chikou Span (Lagging Span)",        minval=1, group="Ichimoku Settings")
+    shiftInput   := input.int(26, title="Senkou Shift (Forward Displacement)", minval=1, group="Ichimoku Settings")
+// === Selezione valori finali === //
+tenkanLen    = ichimokuPreset == "Custom" ? tenkanInput  : tenkanDefault
+kijunLen     = ichimokuPreset == "Custom" ? kijunInput   : kijunDefault
+chikouSpan   = ichimokuPreset == "Custom" ? chikouInput  : chikouDefault
+senkouShift  = ichimokuPreset == "Custom" ? shiftInput   : shiftDefault
+
+// === Checkbox per visibilità linee === //
+showAllSen = input.bool(false, title="Show all Ichimoku lines", group="Ichimoku Settings")
+
+showTenkan = showAllSen or input.bool(false, title="Show Tenkan-sen", group="Ichimoku Settings")
+showKijun  = showAllSen or input.bool(false, title="Show Kijun-sen", group="Ichimoku Settings")
+showChikou = showAllSen or input.bool(false, title="Show Chikou Span", group="Ichimoku Settings")
+
+
+// === Calcoli Ichimoku === //
+tenkanSen     = (ta.highest(high, tenkanLen) + ta.lowest(low, tenkanLen)) / 2
+kijunSen      = (ta.highest(high, kijunLen) + ta.lowest(low, kijunLen)) / 2
+senkouSpanA   = (tenkanSen + kijunSen) / 2
+senkouSpanB   = (ta.highest(high, chikouSpan) + ta.lowest(low, chikouSpan)) / 2
+chikouPlotVal = close
+
+// === Plot Ichimoku === //
+plot(showTenkan ? tenkanSen : na, title="Tenkan-sen", color=color.rgb(20, 164, 221))
+plot(showKijun  ? kijunSen  : na, title="Kijun-sen",  color=color.rgb(224, 112, 112))
+plot(showChikou ? chikouPlotVal : na, title="Chikou Span", color=color.rgb(223, 226, 32), offset=-chikouSpan)
+
+senkouA_plot = plot(senkouSpanA, title="Senkou Span A", color=#0cc3dbbe, offset=senkouShift)
+senkouB_plot = plot(senkouSpanB, title="Senkou Span B", color=#9c27b0, offset=senkouShift)
+fill(senkouA_plot, senkouB_plot, color=senkouSpanA > senkouSpanB ? #00bbd44d : #9b27b04f, title="Ichimoku Kumo")
+
+
+
+
+
+// === LIVELLI DINAMICI S/R === //
+// === DICHIARAZIONE GLOBALE SUPPORTI E RESISTENZE === //
+var line supportLine = na
+var label supportLabel = na
+var line resistanceLine = na
+var label resistanceLabel = na
+
+pivotLen = 5  // lunghezza per validare pivot (es. 5 = 5 barre prima e dopo)
+
+pivotLow  = ta.pivotlow(low, pivotLen, pivotLen)
+pivotHigh = ta.pivothigh(high, pivotLen, pivotLen)
+
+if not na(pivotLow)
+    line.delete(supportLine)
+    label.delete(supportLabel)
+    supportLine := line.new(x1=bar_index - pivotLen, y1=pivotLow, x2=bar_index + 100, y2=pivotLow, xloc=xloc.bar_index, extend=extend.none, color=color.green, width=1,  style=line.style_dotted)
+    supportLabel := label.new(x=bar_index + 132, y=pivotLow,
+                              text="Support – " + str.tostring(pivotLow, format.mintick),
+                              textcolor=color.green,
+                              style=label.style_label_right,
+                              size=size.small,
+                              color=color.new(color.green, 85),
+                              xloc=xloc.bar_index)
+
+if not na(pivotHigh)
+    line.delete(resistanceLine)
+    label.delete(resistanceLabel)
+    resistanceLine := line.new(x1=bar_index - pivotLen, y1=pivotHigh, x2=bar_index + 100, y2=pivotHigh,
+                               xloc=xloc.bar_index,
+                               extend=extend.none,
+                               color=color.red,
+                               width=1,
+                               style=line.style_dotted)
+    resistanceLabel := label.new(x=bar_index + 135, y=pivotHigh,
+                                 text="Resistance – " + str.tostring(pivotHigh, format.mintick),
+                                 textcolor=color.red,
+                                 style=label.style_label_right,
+                                 size=size.small,
+                                 color=color.new(color.red, 85),
+                                 xloc=xloc.bar_index)
+
+
+
+
+// === ICHIMOKU BASE PER DASHBOARD === //
+tenkan    = (ta.highest(high, 9) + ta.lowest(low, 9)) / 2
+kijun     = (ta.highest(high, 26) + ta.lowest(low, 26)) / 2
+senkouA   = (tenkan + kijun) / 2
+senkouB   = (ta.highest(high, 52) + ta.lowest(low, 52)) / 2
+kumoTop   = math.max(senkouA, senkouB)
+kumoBot   = math.min(senkouA, senkouB)
+
+ichimokuLong  = close > kumoTop and tenkan > kijun
+ichimokuShort = close < kumoBot and tenkan < kijun
+
+// === DASHBOARD === //
+var table dash = table.new(position.bottom_right, 2, 4, border_width=1)
+baseBg = color.rgb(46, 48, 56, 73)
+
+// Mostra dashboard solo sull’ultima barra (o condizione simile)
+if bar_index == ta.highest(bar_index, 1)
+    table.cell(dash, 0, 0, "Trend", text_color=color.white, bgcolor=baseBg)
+    table.cell(dash, 1, 0, trendUp ? "⬆️ Bullish" : trendDown ? "⬇️ Bearish" : "➖ Sideways", text_color=color.white, bgcolor=baseBg)
+
+    table.cell(dash, 0, 1, "Compression", text_color=color.white, bgcolor=baseBg)
+    table.cell(dash, 1, 1, compressionNow ? "🌀 Attiva" : "—", text_color=color.white, bgcolor=baseBg)
+
+    table.cell(dash, 0, 2, "Breakout", text_color=color.white, bgcolor=baseBg)
+    table.cell(dash, 1, 2, enterLong ? "🟢 Long" : enterShort ? "🔴 Short" : "—", text_color=color.white, bgcolor=baseBg)
+
+    table.cell(dash, 0, 3, "Ichimoku", text_color=color.white, bgcolor=baseBg)
+    table.cell(dash, 1, 3, ichimokuLong ? "🟩 Long" : ichimokuShort ? "🟥 Short" : "⏸️ Neutro", text_color=color.white, bgcolor=baseBg)
+
+
+
+
+
+// === ALERTS === //
+alertcondition(enterLong, title="Gabremoku Long", message="🚨 MOR☠ LONG su {{ticker}} a {{close}}")
+alertcondition(enterShort, title="Gabremoku Short", message="🚨 MOR☠ SHORT su {{ticker}} a {{close}}")
